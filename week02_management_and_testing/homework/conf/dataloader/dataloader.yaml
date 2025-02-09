@@ -2,3 +2,4 @@ _target_: torch.utils.data.DataLoader
 batch_size: 128
 num_workers: 4
 shuffle: true
+pin_memory: true

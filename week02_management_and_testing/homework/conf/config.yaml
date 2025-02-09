@@ -8,7 +8,7 @@ train:
   device: "cuda"
   num_epochs: 100
   wandb_project: "effdl-homework-01"
-  wandb_run: "ddpm-experiment-01"
+  wandb_run: "ddpm-experiment-default"
   seed: 42
   data:
     random_flip: true

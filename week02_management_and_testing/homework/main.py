@@ -20,7 +20,7 @@ def main():
     config = OmegaConf.load("params.yaml")
     # OmegaConf.save(config, "config.yaml")
     wandb.login()
-    wandb.init(
+    run = wandb.init(
         project=config.train.wandb_project,
         name=config.train.wandb_run,
         config=config,
@@ -29,7 +29,7 @@ def main():
     pathlib.Path("samples").mkdir(exist_ok=True)
     artifact = wandb.Artifact("config", type="config")
     artifact.add_file("params.yaml")
-    wandb.log_artifact(artifact)
+    run.log_artifact(artifact)
     
     device = config.train.device
     eps_model = hydra.utils.instantiate(
@@ -74,9 +74,10 @@ def main():
             "train_loss": train_loss,
             "train_loss_ema": loss_ema,
         }
-        wandb.log(logs, step=epoch)
+        run.log(logs, step=epoch)
 
     torch.save(ddpm.state_dict(), "model_weights.pth")
+    run.finish()
 
 
 if __name__ == "__main__":
