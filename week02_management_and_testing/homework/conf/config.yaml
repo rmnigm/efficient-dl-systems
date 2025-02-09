@@ -1,0 +1,14 @@
+defaults:
+  - train/model@diffusion: ddpm
+  - train/model@eps_model: unet
+  - train/optimizer@optim: adam
+  - dataloader: dataloader
+  - _self_
+train:
+  device: "cuda"
+  num_epochs: 100
+  wandb_project: "effdl-homework-01"
+  wandb_run: "ddpm-experiment-01"
+  seed: 42
+  data:
+    random_flip: true

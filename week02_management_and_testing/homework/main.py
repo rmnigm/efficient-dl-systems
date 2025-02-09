@@ -1,40 +1,83 @@
+import pathlib
+
+import wandb
+import hydra
+from omegaconf import OmegaConf
+
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
 
 from modeling.diffusion import DiffusionModel
-from modeling.training import generate_samples, train_epoch
+from modeling.training import generate_samples, train_epoch, make_grid
 from modeling.unet import UnetModel
+from utils import set_seed
 
 
-def main(device: str, num_epochs: int = 100):
-    ddpm = DiffusionModel(
-        eps_model=UnetModel(3, 3, hidden_size=128),
-        betas=(1e-4, 0.02),
-        num_timesteps=1000,
+# @hydra.main(version_base=None, config_path="conf", config_name="config")
+def main():
+    config = OmegaConf.load("params.yaml")
+    # OmegaConf.save(config, "config.yaml")
+    wandb.login()
+    wandb.init(
+        project=config.train.wandb_project,
+        name=config.train.wandb_run,
+        config=config,
     )
-    ddpm.to(device)
+    set_seed(config.train.seed)
+    pathlib.Path("samples").mkdir(exist_ok=True)
+    artifact = wandb.Artifact("config", type="config")
+    artifact.add_file("params.yaml")
+    wandb.log_artifact(artifact)
+    
+    device = config.train.device
+    eps_model = hydra.utils.instantiate(
+        config.eps_model
+        ).to(device)
+    ddpm = hydra.utils.instantiate(
+        config.diffusion,
+        eps_model=eps_model,
+        ).to(device)
 
-    train_transforms = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
-    )
+    transforms_options = [
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        ]
+    if config.train.data.random_flip:
+        transforms_options.append(transforms.RandomHorizontalFlip())
 
     dataset = CIFAR10(
         "cifar10",
         train=True,
         download=True,
-        transform=train_transforms,
+        transform=transforms.Compose(transforms_options),
     )
+    dataloader = hydra.utils.instantiate(config.dataloader, dataset=dataset)
+    optim = hydra.utils.instantiate(config.optim, ddpm.parameters())
 
-    dataloader = DataLoader(dataset, batch_size=128, num_workers=4, shuffle=True)
-    optim = torch.optim.Adam(ddpm.parameters(), lr=1e-5)
+    num_epochs = config.train.num_epochs
+    for epoch in range(num_epochs):
+        train_loss, loss_ema, input_batch = train_epoch(ddpm, dataloader, optim, device)
 
-    for i in range(num_epochs):
-        train_epoch(ddpm, dataloader, optim, device)
-        generate_samples(ddpm, device, f"samples/{i:02d}.png")
+        input_image = make_grid(input_batch).detach().cpu()
+        input_pil = transforms.functional.to_pil_image(input_image)
+        
+        with torch.no_grad():
+            grid = generate_samples(ddpm, device, f"samples/{epoch:02d}.png")
+
+        output_pil = transforms.functional.to_pil_image(grid.cpu())
+        logs = {
+            "output_batch": wandb.Image(output_pil),
+            "input_batch": wandb.Image(input_pil),
+            "lr": config.optim.lr,
+            "train_loss": train_loss,
+            "train_loss_ema": loss_ema,
+        }
+        wandb.log(logs, step=epoch)
+
+    torch.save(ddpm.state_dict(), "model_weights.pth")
 
 
 if __name__ == "__main__":
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    main(device=device)
+    main()

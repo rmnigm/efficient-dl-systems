@@ -1,0 +1,17 @@
+stages:
+  prepare:
+    cmd: python prepare_data.py
+    deps:
+      - prepare_data.py
+    outs:
+      - cifar10
+  train:
+    cmd: python main.py
+    deps:
+      - modeling
+      - utils.py
+      - main.py
+      - conf/config.yaml
+      - cifar10
+    outs:
+      - model_weights.pth
