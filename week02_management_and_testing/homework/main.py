@@ -48,9 +48,7 @@ def main():
         transforms_options.append(transforms.RandomHorizontalFlip())
 
     dataset = CIFAR10(
-        "cifar10",
-        train=True,
-        download=True,
+        "cifar10/train",
         transform=transforms.Compose(transforms_options),
     )
     dataloader = hydra.utils.instantiate(config.dataloader, dataset=dataset)
