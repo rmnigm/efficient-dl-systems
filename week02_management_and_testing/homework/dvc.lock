@@ -1,0 +1,37 @@
+schema: '2.0'
+stages:
+  prepare:
+    cmd: python prepare_data.py
+    deps:
+    - path: prepare_data.py
+      md5: dd8122b2e343455d8913c39d22f7a018
+      size: 187
+    outs:
+    - path: cifar10
+      md5: bc9a34f7def12ea37410b111a47882ce.dir
+      size: 713424370
+      nfiles: 18
+  train:
+    cmd: python main.py
+    deps:
+    - path: cifar10
+      md5: bc9a34f7def12ea37410b111a47882ce.dir
+      size: 713424370
+      nfiles: 18
+    - path: conf/config.yaml
+      md5: 15487eb523769eacb866c099bb9d5850
+      size: 303
+    - path: main.py
+      md5: d92c961e7545605be109180ee56d2364
+      size: 2608
+    - path: modeling
+      md5: 6217e7729f0ebd5537329e787bbf6346.dir
+      size: 15698
+      nfiles: 8
+    - path: utils.py
+      md5: 9775754232d8ff769ff828c72d8111f2
+      size: 224
+    outs:
+    - path: model_weights.pth
+      md5: 9e7fba1943e4e5ea50218f08d0f3d7c9
+      size: 45480962

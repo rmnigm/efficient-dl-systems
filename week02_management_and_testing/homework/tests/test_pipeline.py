@@ -54,18 +54,24 @@ def _train_run(dataset, learning_rate, hidden_size, device, num_epochs: int = 3)
     optimizer = torch.optim.Adam(ddpm.parameters(), lr=learning_rate)
     
     losses = []
+    losses_ema = []
     for _ in range(0, num_epochs):
-        loss, _ = train_epoch(ddpm, dataloader, optimizer, device)
+        loss, loss_ema, _ = train_epoch(ddpm, dataloader, optimizer, device)
         losses.append(loss.cpu().item())
-    return losses
+        losses_ema.append(loss_ema.cpu().item())
+    return losses, losses_ema
 
 
 @pytest.mark.parametrize(["device"], [["cpu"], ["cuda"]])
 def test_training(device, train_dataset):
     subset_train_dataset = Subset(train_dataset, list(range(0, 12)))
-    losses_1 = _train_run(subset_train_dataset, 5e-4, 32, device)
-    losses_2 = _train_run(subset_train_dataset, 5e-4, 32, device)
-    losses_3 = _train_run(subset_train_dataset, 5e-3, 16, device)
+    losses_1, losses_ema_1 = _train_run(subset_train_dataset, 5e-4, 32, device)
+    losses_2, losses_ema_2 = _train_run(subset_train_dataset, 5e-4, 32, device)
+    losses_3, losses_ema_3 = _train_run(subset_train_dataset, 5e-3, 16, device)
+    
+    assert len(losses_1) == len(losses_ema_1)
+    assert len(losses_2) == len(losses_ema_2)
+    assert len(losses_3) == len(losses_ema_3)
 
     assert losses_1 == pytest.approx(losses_2, abs=3e-3)
     assert losses_1 != pytest.approx(losses_3, abs=3e-3)

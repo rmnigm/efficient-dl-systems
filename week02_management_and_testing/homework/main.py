@@ -58,13 +58,14 @@ def main():
     for epoch in range(num_epochs):
         train_loss, loss_ema, input_batch = train_epoch(ddpm, dataloader, optim, device)
 
-        input_image = make_grid(input_batch).detach().cpu()
+        input_image = make_grid(input_batch).detach().cpu() * 0.5 + 0.5
         input_pil = transforms.functional.to_pil_image(input_image)
         
         with torch.no_grad():
-            grid = generate_samples(ddpm, device, f"samples/{epoch:02d}.png")
+            output_image = generate_samples(ddpm, device, f"samples/{epoch:02d}.png")
+        output_image = output_image.detach().cpu() * 0.5 + 0.5
+        output_pil = transforms.functional.to_pil_image(output_image)
 
-        output_pil = transforms.functional.to_pil_image(grid.cpu())
         logs = {
             "output_batch": wandb.Image(output_pil),
             "input_batch": wandb.Image(input_pil),
