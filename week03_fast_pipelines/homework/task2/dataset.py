@@ -7,12 +7,12 @@ import random
 from torch.utils.data.dataset import Dataset
 from torch.utils.data import Sampler, IterableDataset
 from transformers import AutoTokenizer
-
+from tqdm import tqdm
 
 MAX_LENGTH = 640
 
 
-def yield_texts(data_path: str, max_lines: int = 5000):
+def get_texts(data_path: str, max_lines: int = 300000):
     num_lines = 0
     with open(data_path, "r") as f:
         for line in f:
@@ -25,10 +25,10 @@ def yield_texts(data_path: str, max_lines: int = 5000):
 
 
 class BrainDataset(Dataset):
-    def __init__(self, data_path: str, max_length: int = MAX_LENGTH):
+    def __init__(self, texts: list[str], max_length: int = MAX_LENGTH):
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
         self.texts = []
-        for text in yield_texts(data_path):
+        for text in tqdm(texts):
             self.texts.append(self.tokenizer.encode(text, truncation=True, padding=True, max_length=max_length))
             
     def __getitem__(self, idx: int):
@@ -39,10 +39,10 @@ class BrainDataset(Dataset):
 
 
 class BigBrainDataset(Dataset):
-    def __init__(self, data_path: str, max_length: int = MAX_LENGTH):
+    def __init__(self, texts: list[str], max_length: int = MAX_LENGTH):
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
         self.texts = []
-        for text in yield_texts(data_path):
+        for text in tqdm(texts):
             self.texts.append(self.tokenizer.encode(text, truncation=True, padding=False, max_length=max_length))
 
     def __getitem__(self, idx: int):
@@ -53,12 +53,12 @@ class BigBrainDataset(Dataset):
 
 
 class UltraBigBrainDataset(Dataset):
-    def __init__(self, data_path: str, max_length: int = MAX_LENGTH, k: int = 640):
+    def __init__(self, texts: list[str], max_length: int = MAX_LENGTH, k: int = 640):
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
         self.texts = []
         self.bins = defaultdict(list)
         idx = 0
-        for text in yield_texts(data_path):
+        for text in tqdm(texts):
             tokens = self.tokenizer.encode(text, truncation=True, padding=False, max_length=max_length)
             self.texts.append(tokens)
             self.bins[math.ceil(len(tokens) / k)].append(idx)
@@ -72,10 +72,10 @@ class UltraBigBrainDataset(Dataset):
 
 
 class UltraDuperBigBrainDataset(IterableDataset):
-    def __init__(self, data_path: str, max_length: int = MAX_LENGTH, seed: int = 42):
+    def __init__(self, texts: list[str], max_length: int = MAX_LENGTH, seed: int = 42):
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
         self.texts = []
-        for text in yield_texts(data_path):
+        for text in tqdm(texts):
             self.texts.append(self.tokenizer.encode(text, truncation=True, padding=False, max_length=max_length))
         random.Random(seed).shuffle(self.texts)
         self.max_length = max_length

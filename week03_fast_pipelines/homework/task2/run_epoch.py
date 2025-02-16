@@ -75,23 +75,22 @@ def run_epoch_inner(model, device, dataset, collate_batch_fn, sampler = None):
     return timers[5:], pad_token_ratio[5:]
 
 
-def run_epoch(data_mode: DataMode, k: int = 640) -> None:
+def run_epoch(data_mode: DataMode, texts: list[str], k: int = 640) -> None:
     device = torch.device("cuda:0")
-    data_path = "task2/wikitext-103-raw-v1/train.txt"
     model = get_gpt2_model().to(device)
     if data_mode == DataMode.BRAIN:
-        train_dataset = BrainDataset(data_path)
+        train_dataset = BrainDataset(texts)
         timers, pad_token_ratio = run_epoch_inner(model, device, train_dataset, collate_batch)
     elif data_mode == DataMode.BIG_BRAIN:
-        train_dataset = BigBrainDataset(data_path)
+        train_dataset = BigBrainDataset(texts)
         collate_batch_fn = functools.partial(collate_batch, max_length=None)
         timers, pad_token_ratio = run_epoch_inner(model, device, train_dataset, collate_batch_fn)
     elif data_mode == DataMode.ULTRA_BIG_BRAIN:
-        train_dataset = UltraBigBrainDataset(data_path, k=k)
+        train_dataset = UltraBigBrainDataset(texts, k=k)
         sampler = UltraBigBrainBatchSampler(batch_size=16, bins=train_dataset.bins)
         collate_batch_fn = functools.partial(collate_batch, max_length=None)
         timers, pad_token_ratio = run_epoch_inner(model, device, train_dataset, collate_batch_fn, sampler)
     elif data_mode == DataMode.ULTRA_DUPER_BIG_BRAIN:
-        train_dataset = UltraDuperBigBrainDataset(data_path)
+        train_dataset = UltraDuperBigBrainDataset(texts)
         timers, pad_token_ratio = run_epoch_packed_batch(model, device, train_dataset, collate_packed_batch)
     return pd.DataFrame({"pad_token_ratio": pad_token_ratio, "time": timers}).describe()
