@@ -118,7 +118,7 @@ def train_epoch_with_torch_profiler(model, train_loader, criterion, optimizer):
             if cnt >= 4:
                 break
     prof.export_chrome_trace("torch-trace.json")
-    return prof.key_averages().table(sort_by="cuda_time_total")
+    return prof.key_averages()
 
     
 def eval_epoch(model, val_loader, criterion):
