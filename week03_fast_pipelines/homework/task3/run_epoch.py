@@ -99,9 +99,7 @@ def train_epoch_with_torch_profiler(model, train_loader, criterion, optimizer):
     model.train()
     with profile(
         schedule=torch.profiler.schedule(wait=0, warmup=1, active=3, repeat=1),
-        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        profile_memory=True,
-        with_stack=True,
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True
         ) as prof:
         cnt = 0 # i was too lazy to wait full epoch
         for data, label in tqdm(train_loader, desc="Train"):
