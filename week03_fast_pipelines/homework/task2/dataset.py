@@ -72,15 +72,35 @@ class UltraBigBrainDataset(Dataset):
 
 
 class UltraDuperBigBrainDataset(IterableDataset):
-    def __init__(self, data_path: str, max_length: int = MAX_LENGTH):
-        pass
-
+    def __init__(self, data_path: str, max_length: int = MAX_LENGTH, seed: int = 42):
+        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        self.texts = []
+        for text in yield_texts(data_path):
+            self.texts.append(self.tokenizer.encode(text, truncation=True, padding=False, max_length=max_length))
+        random.Random(seed).shuffle(self.texts)
+        self.max_length = max_length
+        
     def __iter__(self):
-        pass
+        current_text = []
+        current_lengths = []
+        for text in self.texts:
+            tl = len(text)
+            current_text += text
+            excess = len(current_text) - self.max_length
+            if excess < 0:
+                current_lengths.append(tl)
+            else:
+                if excess > 0:
+                    current_text = current_text[:-excess]
+                    current_lengths.append(tl - excess)
+                yield current_text, current_lengths
+                current_text = []
+                current_lengths = []
+        yield current_text, current_lengths
 
 
 def collate_batch(
-    batch: list[list[int]], max_length: Optional[int] = None
+    batch: list[list[int]], max_length: Optional[int] = MAX_LENGTH
 ) -> tuple[torch.Tensor]:
     """Pad each sequence of the incoming sequences list"""
     if max_length is None:
@@ -91,27 +111,47 @@ def collate_batch(
     return texts
 
 
+def build_attn_mask(size: int, lengths: list[int]) -> torch.Tensor:
+    mask = lambda size: torch.triu(torch.ones(size, size) * float("-inf"), diagonal=1)
+    attn_mask = torch.full((size, size), float("-inf"))
+    start = 0
+    for length in lengths:
+        end = start + length
+        attn_mask[start:end, start:end] = mask(length)
+        start = end
+    return attn_mask
+
+
+def collate_packed_batch(
+    batch: tuple[list[int], list[int]], max_length: Optional[int] = None
+) -> tuple[torch.Tensor]:
+    """Pad each sequence of the incoming sequences list"""
+    text, lengths = batch
+    text_tensor = torch.tensor(text, dtype=torch.int64)[None, :]
+    attn_mask = build_attn_mask(len(text), lengths)
+    return text_tensor, attn_mask
+
+
 class UltraBigBrainBatchSampler(Sampler):
 
     def __init__(self, batch_size: int, bins: dict, seed: int = 42, max_length: Optional[int] = MAX_LENGTH):
         self.bins = bins
-        self.bin_lengths = list(bins.keys())
         self.batch_size = batch_size
         self.num_batches = 0
         self.rng = random.Random(seed)
-        for bin in self.bins.values():
+        self.bin_lengths = []
+        for k, bin in self.bins.items():
+            self.bin_lengths.append(k)
             self.num_batches += math.ceil(len(bin) / batch_size)
+            self.rng.shuffle(bin)
+        self.rng.shuffle(self.bin_lengths)
 
     def __len__(self):
         return self.num_batches
 
     def __iter__(self):
-        iterable = []
-        self.rng.shuffle(self.bin_lengths)
         for k in self.bin_lengths:
             bin = self.bins[k]
-            self.rng.shuffle(bin)
             for i in range(0, len(bin), self.batch_size):
                 indices = bin[i:i+self.batch_size]
-                iterable.append(indices)
-        return iter(iterable)
+                yield indices
