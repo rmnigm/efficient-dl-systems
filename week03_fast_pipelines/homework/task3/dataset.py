@@ -7,7 +7,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
-from utils import Clothes, get_labels_dict
+from task3.utils import Clothes, get_labels_dict
 
 
 class ClothesDataset(Dataset):

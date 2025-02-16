@@ -91,6 +91,6 @@ def run_epoch(data_mode: DataMode, texts: list[str], k: int = 640) -> None:
         collate_batch_fn = functools.partial(collate_batch, max_length=None)
         timers, pad_token_ratio = run_epoch_inner(model, device, train_dataset, collate_batch_fn, sampler)
     elif data_mode == DataMode.ULTRA_DUPER_BIG_BRAIN:
-        train_dataset = UltraDuperBigBrainDataset(texts)
+        train_dataset = UltraDuperBigBrainDataset(texts, max_length=640 * 8)
         timers, pad_token_ratio = run_epoch_packed_batch(model, device, train_dataset, collate_packed_batch)
     return pd.DataFrame({"pad_token_ratio": pad_token_ratio, "time": timers}).describe()

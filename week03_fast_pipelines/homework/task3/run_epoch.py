@@ -3,14 +3,17 @@ import typing as tp
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import dataset
+import task3.dataset as dataset
 import pandas as pd
 
 from torch.utils.data import DataLoader
+from torch.profiler import ProfilerActivity, profile, record_function
 from tqdm import tqdm
 
-from utils import Settings, Clothes, seed_everything
-from vit import ViT
+from task3.utils import Settings, Clothes, seed_everything
+from task3.vit import ViT
+from task3.profiler import Profile, Schedule
+
 
 
 def get_vit_model() -> torch.nn.Module:
@@ -50,9 +53,8 @@ def get_loaders() -> torch.utils.data.DataLoader:
     return train_loader, val_loader
 
 
-def run_epoch(model, train_loader, val_loader, criterion, optimizer) -> tp.Tuple[float, float]:
+def train_epoch(model, train_loader, criterion, optimizer):
     epoch_loss, epoch_accuracy = 0, 0
-    val_loss, val_accuracy = 0, 0
     model.train()
     for data, label in tqdm(train_loader, desc="Train"):
         data = data.to(Settings.device)
@@ -65,7 +67,64 @@ def run_epoch(model, train_loader, val_loader, criterion, optimizer) -> tp.Tuple
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+    return epoch_loss, epoch_accuracy
 
+
+def train_epoch_with_profiler(model, train_loader, criterion, optimizer):
+    epoch_loss, epoch_accuracy = 0, 0
+    model.train()
+    with Profile(
+        model, schedule=Schedule(0, 1, 3, 1)
+        ) as prof:
+        for data, label in tqdm(train_loader, desc="Train", total=prof.schedule.total_steps()):
+            data = data.to(Settings.device)
+            label = label.to(Settings.device)
+            output = model(data)
+            loss = criterion(output, label)
+            acc = (output.argmax(dim=1) == label).float().mean()
+            epoch_accuracy += acc.item() / len(train_loader)
+            epoch_loss += loss.item() / len(train_loader)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            prof.step()
+            if prof.schedule.get_phase() == "done":
+                break
+    prof.to_perfetto("own-trace.json")
+    return prof.summary()
+
+
+def train_epoch_with_torch_profiler(model, train_loader, criterion, optimizer):
+    epoch_loss, epoch_accuracy = 0, 0
+    model.train()
+    with profile(
+        schedule=torch.profiler.schedule(wait=0, warmup=1, active=3, repeat=1),
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        profile_memory=True,
+        with_stack=True,
+        ) as prof:
+        cnt = 0 # i was too lazy to wait full epoch
+        for data, label in tqdm(train_loader, desc="Train"):
+            data = data.to(Settings.device)
+            label = label.to(Settings.device)
+            output = model(data)
+            loss = criterion(output, label)
+            acc = (output.argmax(dim=1) == label).float().mean()
+            epoch_accuracy += acc.item() / len(train_loader)
+            epoch_loss += loss.item() / len(train_loader)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            prof.step()
+            cnt += 1
+            if cnt >= 4:
+                break
+    prof.export_chrome_trace("torch-trace.json")
+    return prof.key_averages().table(sort_by="cuda_time_total")
+
+    
+def eval_epoch(model, val_loader, criterion):
+    val_loss, val_accuracy = 0, 0
     model.eval()
     for data, label in tqdm(val_loader, desc="Val"):
         data = data.to(Settings.device)
@@ -73,21 +132,23 @@ def run_epoch(model, train_loader, val_loader, criterion, optimizer) -> tp.Tuple
         output = model(data)
         loss = criterion(output, label)
         acc = (output.argmax(dim=1) == label).float().mean()
-        val_accuracy += acc.item() / len(train_loader)
-        val_loss += loss.item() / len(train_loader)
+        val_accuracy += acc.item() / len(val_loader)
+        val_loss += loss.item() / len(val_loader)
+    return val_loss, val_accuracy
 
-    return epoch_loss, epoch_accuracy, val_loss, val_accuracy
 
-
-def main():
+def profile_vit(mode="own"):
     seed_everything()
     model = get_vit_model()
-    train_loader, val_loader = get_loaders()
+    train_loader, _ = get_loaders()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=Settings.lr)
-
-    run_epoch(model, train_loader, val_loader, criterion, optimizer)
+    if mode == "own":
+        summary = train_epoch_with_profiler(model, train_loader, criterion, optimizer)
+    elif mode == "torch":
+        summary = train_epoch_with_torch_profiler(model, train_loader, criterion, optimizer)
+    return summary
 
 
 if __name__ == "__main__":
-    main()
+    profile_vit()
