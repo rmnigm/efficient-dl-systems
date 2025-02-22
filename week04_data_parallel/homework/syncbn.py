@@ -20,12 +20,36 @@ class sync_batch_norm(Function):
     def forward(ctx, input, running_mean, running_std, eps: float, momentum: float):
         # Compute statistics, sync statistics, apply them to the input
         # Also, store relevant quantities to be used on the backward pass with `ctx.save_for_backward`
-        pass
+        b, c, l = input.shape
+        input_sum = torch.sum(input, dim=(0, 2))
+        input_sum_sq = torch.sum(input ** 2, dim=(0, 2))
+        buffer = torch.empty((c, 2), device=input.device)
+        buffer[:, 0] = input_sum
+        buffer[:, 1] = input_sum_sq
+        size = b * l * dist.get_world_size()
+        dist.all_reduce(buffer.detach(), op=dist.ReduceOp.SUM)
+        mean = buffer[:, 0] / size
+        mean_sq = buffer[:, 1] / size
+        std = torch.sqrt(mean_sq - mean ** 2)
+        output = (input - mean[None, :, None]) / (std + eps)[None, :, None]
+        with torch.no_grad():
+            running_mean.data = (1 - momentum) * running_mean + momentum * mean
+            running_std.data = (1 - momentum) * running_std + momentum * std * (size / (size - 1)) ** 0.5
+        ctx.save_for_backward(output, 1 / (std + eps))
+        return output
 
     @staticmethod
     def backward(ctx, grad_output):
         # don't forget to return a tuple of gradients wrt all arguments of `forward`!
-        pass
+        output, inverse_std = ctx.saved_tensors
+        grad_input = grad_output.clone()
+        _, c, l = grad_input.shape
+        size = c * l * dist.get_world_size()
+        grad_input -= torch.sum(grad_output, dim=(1, 2), keepdim=True) / size
+        grad_input -= output * (output * grad_output).sum(dim=(1, 2), keepdim=True) / size
+        grad_input *= inverse_std[None, :, None]
+        dist.all_reduce(grad_input, op=dist.ReduceOp.SUM)
+        return grad_input, None, None, None, None
 
 
 class SyncBatchNorm(_BatchNorm):
@@ -50,4 +74,4 @@ class SyncBatchNorm(_BatchNorm):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         # You will probably need to use `sync_batch_norm` from above
-        pass
+        return sync_batch_norm.apply(input, self.running_mean, self.running_std, self.eps, self.momentum)

@@ -1,5 +1,6 @@
 import os
 
+import torch
 import torch.distributed as dist
 
 
@@ -18,8 +19,16 @@ def run_sequential(rank, size, num_iter=10):
     Process 2
     ```
     """
-
-    pass
+    for i in range(num_iter):
+        for j in range(size):
+            if j == rank:
+                print(f"Process {j}")
+            dist.barrier()
+        if i != num_iter - 1:
+            if rank == size - 1:
+                print("---")
+            dist.barrier()
+    
 
 
 if __name__ == "__main__":

@@ -7,7 +7,10 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from torch.profiler import profile, ProfilerActivity
 from torchvision.datasets import CIFAR100
+
+from syncbn import SyncBatchNorm
 
 torch.set_num_threads(1)
 
@@ -25,15 +28,21 @@ class Net(nn.Module):
     Feel free to replace it with EffNetV2-XL once you get comfortable injecting SyncBN into models programmatically.
     """
 
-    def __init__(self):
+    def __init__(self, sync_bn="own"):
         super().__init__()
+        assert sync_bn in ["own", "torch", "none"]
         self.conv1 = nn.Conv2d(3, 32, 3, 1)
         self.conv2 = nn.Conv2d(32, 32, 3, 1)
         self.dropout1 = nn.Dropout(0.25)
         self.dropout2 = nn.Dropout(0.5)
         self.fc1 = nn.Linear(6272, 128)
         self.fc2 = nn.Linear(128, 100)
-        self.bn1 = nn.BatchNorm1d(128, affine=False)  # to be replaced with SyncBatchNorm
+        if sync_bn == "none":
+            self.bn1 = nn.BatchNorm1d(128, affine=False)
+        elif sync_bn == "own":
+            self.bn1 = SyncBatchNorm(128)
+        elif sync_bn == "torch":
+            self.bn1 = nn.SyncBatchNorm(128, affine=False)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -61,10 +70,8 @@ def average_gradients(model):
         param.grad.data /= size
 
 
-def run_training(rank, size):
-    torch.manual_seed(0)
-
-    dataset = CIFAR100(
+def setup_dataloaders():
+    train_dataset = CIFAR100(
         "./cifar",
         transform=transforms.Compose(
             [
@@ -73,21 +80,80 @@ def run_training(rank, size):
             ]
         ),
         download=True,
+        train=True,
     )
-    # where's the validation dataset?
-    loader = DataLoader(dataset, sampler=DistributedSampler(dataset, size, rank), batch_size=64)
+    val_dataset = CIFAR100(
+        "./cifar",
+        transform=transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
+            ]
+        ),
+        download=True,
+        train=False,
+    )
+    train_loader = DataLoader(train_dataset, sampler=DistributedSampler(train_dataset, size, rank), batch_size=64)
+    val_loader = DataLoader(val_dataset, sampler=DistributedSampler(val_dataset, size, rank), batch_size=64)
+    return train_loader, val_loader
 
+
+def run_training(rank, size):
+    torch.manual_seed(0)
+    train_loader, val_loader = setup_dataloaders()
     model = Net()
     device = torch.device("cpu")  # replace with "cuda" afterwards
     model.to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 
-    num_batches = len(loader)
+    num_batches = len(train_loader)
+    num_accum_steps = 2
+    with profile(activities=[ProfilerActivity.CPU], profile_memory=True) as prof:
+        for _ in range(2):
+            epoch_loss = torch.zeros((1,), device=device)
+            model.train()
+            for i, (data, target) in enumerate(train_loader):
+                data = data.to(device)
+                target = target.to(device)
+
+                output = model(data)
+                loss = torch.nn.functional.cross_entropy(output, target)
+                epoch_loss += loss.detach()
+                loss.backward()
+                if (i + 1) % num_accum_steps == 0:
+                    average_gradients(model)
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+                acc = (output.argmax(dim=1) == target).float().mean()
+
+                print(f"Rank {dist.get_rank()}, loss: {epoch_loss / num_batches}, acc: {acc}")
+                epoch_loss = 0
+    prof.export_chrome_trace("trace.json")
+    print(prof.key_averages().table())
+        # model.eval()
+        # with torch.no_grad():
+        #     for data, target in val_loader:
+        #         data = data.to(device)
+        #         target = target.to(device)
+        #         output = model(data)
+        #         loss = torch.nn.functional.cross_entropy(output, target)
+
+
+def run_training_torch_tooling(rank, size):
+    torch.manual_seed(0)
+    train_loader, val_loader = setup_dataloaders()
+    model = Net()
+    device = torch.device("cpu")  # replace with "cuda" afterwards
+    model.to(device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
+
+    num_batches = len(train_loader)
 
     for _ in range(10):
         epoch_loss = torch.zeros((1,), device=device)
-
-        for data, target in loader:
+        model.train()
+        for data, target in train_loader:
             data = data.to(device)
             target = target.to(device)
 
@@ -103,8 +169,14 @@ def run_training(rank, size):
 
             print(f"Rank {dist.get_rank()}, loss: {epoch_loss / num_batches}, acc: {acc}")
             epoch_loss = 0
-        # where's the validation loop?
-
+        # model.eval()
+        # with torch.no_grad():
+        #     for data, target in val_loader:
+        #         data = data.to(device)
+        #         target = target.to(device)
+        #         output = model(data)
+        #         loss = torch.nn.functional.cross_entropy(output, target)
+    
 
 if __name__ == "__main__":
     local_rank = int(os.environ["LOCAL_RANK"])
