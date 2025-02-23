@@ -20,41 +20,40 @@ class sync_batch_norm(Function):
     def forward(ctx, input, running_mean, running_std, eps: float, momentum: float):
         # Compute statistics, sync statistics, apply them to the input
         # Also, store relevant quantities to be used on the backward pass with `ctx.save_for_backward`
-        b, c, l = input.shape
-        input_sum = torch.sum(input, dim=(0, 2))
-        input_sum_sq = torch.sum(input ** 2, dim=(0, 2))
+        b, c = input.shape
+        input_sum = torch.sum(input, dim=0)
+        input_sum_sq = torch.sum(input ** 2, dim=0)
         buffer = torch.empty((c, 2), device=input.device)
         buffer[:, 0] = input_sum
         buffer[:, 1] = input_sum_sq
-        size = b * l * dist.get_world_size()
+        size = b * dist.get_world_size()
         dist.all_reduce(buffer.detach(), op=dist.ReduceOp.SUM)
         mean = buffer[:, 0] / size
         mean_sq = buffer[:, 1] / size
         std = torch.sqrt(mean_sq - mean ** 2)
-        output = (input - mean[None, :, None]) / (std + eps)[None, :, None]
+        output = (input - mean[None, :]) / (std + eps)[None, :]
         with torch.no_grad():
-            running_mean = running_mean.to(input.device)
-            running_std = running_std.to(input.device)  
-            running_mean = running_mean * (1 - momentum) + momentum * mean
-            running_std = running_std * (1 - momentum) + momentum * std * size / (size - 1)
-        ctx.save_for_backward(output, mean, 1 / (std + eps))
+            running_mean.mul_(1 - momentum).add_(momentum * mean)
+            running_std.mul_(1 - momentum).add_(momentum * std * size / (size - 1))
+        ctx.save_for_backward(input - mean[None, :], output, 1 / (std + eps))
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
-        # don't forget to return a tuple of gradients wrt all arguments of `forward`!
-        output, mean, inv_std = ctx.saved_tensors
-        inv_std, normalized, bias_x = inv_std, output, mean
-        b, c, _ = normalized.shape
+        shifted_input, output, inv_std = ctx.saved_tensors
+        b, c = output.shape
+        size = b * dist.get_world_size()
 
-        grad_output_norm = grad_output * inv_std
-        grad_var = (-0.5 * (grad_output_norm * normalized * inv_std)).sum(0)
-        grad_mean = grad_output_norm.sum(0) + 2 * bias_x.sum(0) / b
-
-        dist.all_reduce((info_grad := torch.cat([grad_mean, grad_var])), op=dist.ReduceOp.SUM)
-        grad_mean, grad_var = info_grad.split(c)
-
-        return grad_output_norm + (2 * grad_var * bias_x - grad_mean) / b, None, None, None, None
+        grad_output *= inv_std
+        grad_std = (-0.5 * (grad_output * output * inv_std)).sum(0)
+        grad_mean = grad_output.sum(0) + 2 * shifted_input.sum(0) / size
+        buffer = torch.empty((2, c), device=output.device)
+        buffer[0], buffer[1] = grad_mean, grad_std
+        dist.all_reduce(buffer, op=dist.ReduceOp.SUM)
+        grad_mean, grad_std = buffer[0], buffer[1]
+        grad_input = grad_output
+        grad_input += (2 * grad_std * shifted_input - grad_mean) / size
+        return grad_input, None, None, None, None
 
 
 class SyncBatchNorm(_BatchNorm):
@@ -79,12 +78,10 @@ class SyncBatchNorm(_BatchNorm):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         # You will probably need to use `sync_batch_norm` from above
-        if len(input.shape) == 2:
-            input = input[:, :, None]
+        self.running_mean = self.running_mean.to(input.device)
+        self.running_std = self.running_std.to(input.device)
         if not self.training:
-            output = (input - self.running_mean[None, :, None].to(input.device)) / (self.running_std[None, :, None].to(input.device) + self.eps)
+            output = (input - self.running_mean[None, :]) / (self.running_std[None, :] + self.eps)
         else:
             output = sync_batch_norm.apply(input, self.running_mean, self.running_std, self.eps, self.momentum)
-        if len(output.shape) == 3:
-            output = output[:, :, 0]
         return output

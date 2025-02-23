@@ -27,16 +27,22 @@ def _compare_impl(rank, size, hid_dim, sbn_x, bn_x):
     bn_output = bn(bn_x)
     
     rank_slice = slice(rank * local_batch_size, (rank + 1) * local_batch_size)
-    bn_output[:global_batch_size//2, ...].sum().backward()
-    sbn_output[:global_batch_size//2, ...].sum().backward()
-    assert torch.allclose(sbn_output, bn_output, atol=1e-3, rtol=0)
+    bn_loss = bn_output[:global_batch_size//2, ...].sum()
+    global_idx_left = local_batch_size * rank
+    global_idx_right = local_batch_size * (rank + 1)
+    loss_breakpoint = min(global_idx_right, global_batch_size // 2)
+    shifted_loss_breakpoint = loss_breakpoint - global_idx_left
+    sbn_loss = sbn_output[:shifted_loss_breakpoint].sum()
+    bn_loss.backward()
+    sbn_loss.backward()
+    assert torch.allclose(sbn_output, bn_output[rank_slice], atol=1e-3, rtol=0)
     print(sbn_x.grad, bn_x.grad)
-    assert torch.allclose(sbn_x.grad, bn_x.grad, atol=1e-3, rtol=0)
+    assert torch.allclose(sbn_x.grad, bn_x.grad[rank_slice], atol=1e-3, rtol=0)
 
 
-@pytest.mark.parametrize("num_workers", [1])
-@pytest.mark.parametrize("hid_dim", [8]) # , 256, 512, 1024
-@pytest.mark.parametrize("batch_size", [8]) # 64
+@pytest.mark.parametrize("num_workers", [1, 4])
+@pytest.mark.parametrize("hid_dim", [8, 256, 512, 1024])
+@pytest.mark.parametrize("batch_size", [32, 64])
 def test_batchnorm(num_workers, hid_dim, batch_size):
     # Verify that the implementation of SyncBatchNorm gives the same results (both for outputs
     # and gradients with respect to input) as torch.nn.BatchNorm1d on a variety of inputs.
