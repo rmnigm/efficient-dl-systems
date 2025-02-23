@@ -33,23 +33,28 @@ class sync_batch_norm(Function):
         std = torch.sqrt(mean_sq - mean ** 2)
         output = (input - mean[None, :, None]) / (std + eps)[None, :, None]
         with torch.no_grad():
-            running_mean.data = (1 - momentum) * running_mean + momentum * mean
-            running_std.data = (1 - momentum) * running_std + momentum * std * (size / (size - 1)) ** 0.5
-        ctx.save_for_backward(output, 1 / (std + eps))
+            running_mean = running_mean.to(input.device)
+            running_std = running_std.to(input.device)  
+            running_mean = running_mean * (1 - momentum) + momentum * mean
+            running_std = running_std * (1 - momentum) + momentum * std * size / (size - 1)
+        ctx.save_for_backward(output, mean, 1 / (std + eps))
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
         # don't forget to return a tuple of gradients wrt all arguments of `forward`!
-        output, inverse_std = ctx.saved_tensors
-        grad_input = grad_output.clone()
-        _, c, l = grad_input.shape
-        size = c * l * dist.get_world_size()
-        grad_input -= torch.sum(grad_output, dim=(1, 2), keepdim=True) / size
-        grad_input -= output * (output * grad_output).sum(dim=(1, 2), keepdim=True) / size
-        grad_input *= inverse_std[None, :, None]
-        dist.all_reduce(grad_input, op=dist.ReduceOp.SUM)
-        return grad_input, None, None, None, None
+        output, mean, inv_std = ctx.saved_tensors
+        inv_std, normalized, bias_x = inv_std, output, mean
+        b, c, _ = normalized.shape
+
+        grad_output_norm = grad_output * inv_std
+        grad_var = (-0.5 * (grad_output_norm * normalized * inv_std)).sum(0)
+        grad_mean = grad_output_norm.sum(0) + 2 * bias_x.sum(0) / b
+
+        dist.all_reduce((info_grad := torch.cat([grad_mean, grad_var])), op=dist.ReduceOp.SUM)
+        grad_mean, grad_var = info_grad.split(c)
+
+        return grad_output_norm + (2 * grad_var * bias_x - grad_mean) / b, None, None, None, None
 
 
 class SyncBatchNorm(_BatchNorm):
@@ -75,5 +80,11 @@ class SyncBatchNorm(_BatchNorm):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         # You will probably need to use `sync_batch_norm` from above
         if len(input.shape) == 2:
-            input = input.unsqueeze(1)
-        return sync_batch_norm.apply(input, self.running_mean, self.running_std, self.eps, self.momentum)[:, 0, :]
+            input = input[:, :, None]
+        if not self.training:
+            output = (input - self.running_mean[None, :, None].to(input.device)) / (self.running_std[None, :, None].to(input.device) + self.eps)
+        else:
+            output = sync_batch_norm.apply(input, self.running_mean, self.running_std, self.eps, self.momentum)
+        if len(output.shape) == 3:
+            output = output[:, :, 0]
+        return output
